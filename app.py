@@ -430,16 +430,32 @@ if st.button("📤 Export Chart & Summary to PDF"):
     ax1.set_ylim(-0.5, max(y_map.values()) + 0.5)
     ax1.grid(True)
 
-    # ===== Summary Table Section =====
+# ===== Summary Table Section =====
+import re, textwrap
+
     ax2 = fig.add_subplot(gs[1])
     ax2.axis('off')
 
+    # --- 1️⃣  Clean & wrap PK-Range ---
     table_data = sum_grouped.copy()
-    table_data["PK Range"] = table_data["PK Range"].apply(lambda x: "\n".join(x[i:i+60] for i in range(0, len(x), 60)))
-    data_matrix = table_data.values.tolist()
-    col_labels = list(table_data.columns)
 
-    table = ax2.table(
+    def clean_and_wrap(text, width=55):
+        # remove numbered prefixes e.g. "(1). ", "(12). "
+        cleaned = re.sub(r"\(\d+\)\.\s*", "", text)
+        # wrap nicely
+        return "\n".join(textwrap.wrap(cleaned, width=width))
+
+    table_data["PK Range"] = table_data["PK Range"].apply(clean_and_wrap)
+
+    # keep track of how many lines each cell has (for row height calc)
+    line_counts = table_data["PK Range"].apply(lambda s: s.count("\n") + 1).tolist()
+
+    # --- 2️⃣  Build the table ---
+    data_matrix = table_data.values.tolist()
+    col_labels   = list(table_data.columns)
+    col_widths   = [0.12, 0.22, 0.50, 0.13]   # tweak if needed
+
+    tbl = ax2.table(
         cellText=data_matrix,
         colLabels=col_labels,
         cellLoc='center',
@@ -447,24 +463,36 @@ if st.button("📤 Export Chart & Summary to PDF"):
         bbox=[0, 0, 1, 1]
     )
 
-    table.auto_set_font_size(False)
-    col_widths = [0.12, 0.22, 0.5, 0.13]
+    tbl.auto_set_font_size(False)
 
-    for (row, col), cell in table.get_celld().items():
-        cell.set_linewidth(0.7)
-        cell.set_fontsize(13)
-        cell.set_height(0.15)
+    # --- 3️⃣  Style header, zebra rows & dynamic height ---
+    for (row, col), cell in tbl.get_celld().items():
+
+        # dynamic height (skip header row 0)
+        if row > 0:
+            this_height = 0.15 * line_counts[row-1]   # base = 0.15
+            cell.set_height(this_height)
+
+        # fixed widths
         if col < len(col_widths):
             cell.set_width(col_widths[col])
+
+        # common font settings
+        cell.set_fontsize(13)
+        cell.set_linewidth(0.7)
+
+        # header styling
         if row == 0:
-            cell.set_text_props(color='white', weight='bold')
             cell.set_facecolor('#003366')
-        elif "Request" in str(data_matrix[row - 1][0]):
+            cell.set_text_props(weight='bold', color='white')
+        # light-green background for Request rows
+        elif "Request" in str(data_matrix[row-1][0]):
             cell.set_facecolor('#e5f5e5')
         else:
             cell.set_facecolor('white')
 
-    table.scale(1, 2.0)
+    tbl.scale(1, 1.8)   # overall vertical scaling (adjust to taste)
+
     pdf.savefig(fig, bbox_inches='tight')
     pdf.close()
 
