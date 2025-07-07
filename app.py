@@ -39,6 +39,9 @@ if st.sidebar.button("🔄 Refresh Data"):
 # Load data
 if os.path.exists(DATA_FILE):
     df = pd.read_excel(DATA_FILE)
+# Remove .0 formatting from Year and Chapter
+    df["Year"] = pd.to_numeric(df["Year"], errors="coerce").dropna().astype(int).astype(str)
+    df["Chapter"] = pd.to_numeric(df["Chapter"], errors="coerce").dropna().astype(int).astype(str)
 else:
     st.error("Excel data file not found.")
     st.stop()
@@ -331,8 +334,6 @@ sum_grouped["Total Distance (km)"] = sum_grouped["Total Distance (km)"].round(2)
 st.dataframe(sum_grouped)
 
 
-import io
-
 # Export section
 st.markdown("---")
 if st.button("📤 Export Chart & Summary to PDF"):
@@ -340,9 +341,8 @@ if st.button("📤 Export Chart & Summary to PDF"):
     from matplotlib.gridspec import GridSpec
     from matplotlib.ticker import FuncFormatter
 
-    export_base = f"{selected_road}_{int(start_input)}_{int(end_input)}.pdf"
-    buffer = io.BytesIO()
-    pdf = PdfPages(buffer)
+    export_base = f"{selected_road}_{int(start_input)}_{int(end_input)}"
+    pdf = PdfPages(f"{export_base}.pdf")
 
     fig = plt.figure(figsize=(16.5, 11.7))  # A3 landscape
     gs = GridSpec(2, 1, height_ratios=[3.5, 1])
@@ -371,46 +371,42 @@ if st.button("📤 Export Chart & Summary to PDF"):
             continue
 
         ax1.barh(y, clipped_end - clipped_start, left=clipped_start, color=color,
-                 edgecolor="black", height=0.4)
-
-        label_x = (clipped_start + clipped_end) / 2
-        offset = 0.1
-        for prev_x in label_positions.get(y, []):
-            if abs(label_x - prev_x) < 5000:
-                offset += 0.1
-        label_positions.setdefault(y, []).append(label_x)
-        ax1.text(label_x, y + offset, str(seg["Maintenance_Type"]), ha='center',
-                 va='bottom', fontsize=font_size, fontproperties=font_prop)
+                 edgecolor="black" if seg["Type"] == "Request" else "none", height=0.4)
 
         if seg["Type"] == "Request":
             pk_start, pk_end = seg["PK_Start"], seg["PK_End"]
             label_x = (pk_start + pk_end) / 2
-            pk_label = f"{int(pk_start//1000)}+{int(pk_start%1000):03d} to {int(pk_end//1000)}+{int(pk_end%1000):03d}"
+            seq_label = seg.get("Seq", "")
+            if isinstance(seq_label, (int, float)) and not pd.isna(seq_label):
+                seq_text = f"({int(seq_label)}). "
+            else:
+                seq_text = ""
 
+            pk_text = f"{seq_text}{int(pk_start//1000)}+{int(pk_start%1000):03d} to {int(pk_end//1000)}+{int(pk_end%1000):03d}"
             pk_offset = 0.3
             for ex in pk_label_positions:
                 if abs(ex - label_x) < 10000:
                     pk_offset += 0.5
             pk_label_positions.append(label_x)
-            ax1.text(label_x, y - pk_offset, pk_label, ha='center', va='top',
+            ax1.text(label_x, y - pk_offset, pk_text, ha='center', va='top',
                      fontsize=12, color="darkred", fontproperties=font_prop)
             ax1.axvline(pk_start, linestyle="dashed", color=color, alpha=0.6)
             ax1.axvline(pk_end, linestyle="dashed", color=color, alpha=0.6)
 
+    # Manual labels
     for item in manual_labels:
-        if len(item) == 4:
-            text, pk_start, pk_end, color = item
-            label_x = (pk_start + pk_end) / 2
-            ax1.text(label_x, max(y_map.values()) + 1.5, text,
+        if len(item) == 3:
+            text, pk, color = item
+            ax1.text(pk - 1000, len(y_labels) + 1.5, text,
                      fontsize=font_size, fontproperties=font_prop,
-                     color=color, ha='center')
-            ax1.vlines([pk_start, pk_end], ymin=-2, ymax=max(y_map.values()) + 1.5,
+                     color=color, ha='right')
+            ax1.vlines(pk, ymin=-2, ymax=len(y_labels) + 1.5,
                        color=color, linestyle='dotted', linewidth=1)
 
     ax1.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{int(x // 1000)}+{int(x % 1000):03d}"))
     ax1.set_yticks(list(y_map.values()))
     for y_val, label in zip(y_map.values(), y_labels):
-        ax1.text(start_input - 5000, y_val, label,
+        ax1.text(start_input - 40000, y_val, label,
                  va='center', ha='right', fontsize=font_size,
                  fontproperties=font_prop, color=y_label_colors.get(y_val, "black"))
 
@@ -430,32 +426,22 @@ if st.button("📤 Export Chart & Summary to PDF"):
     ax1.set_ylim(-0.5, max(y_map.values()) + 0.5)
     ax1.grid(True)
 
-# ===== Summary Table Section =====
-import re, textwrap
-
+    # ===== Summary Table Section =====
     ax2 = fig.add_subplot(gs[1])
     ax2.axis('off')
 
-    # --- 1️⃣  Clean & wrap PK-Range ---
+    # ➕ Wrap PK entries every 3 items
+    def wrap_pk_ranges(cell, wrap_after=3):
+        parts = cell.split(", ")
+        lines = [", ".join(parts[i:i+wrap_after]) for i in range(0, len(parts), wrap_after)]
+        return "\n".join(lines)
+
     table_data = sum_grouped.copy()
-
-    def clean_and_wrap(text, width=55):
-        # remove numbered prefixes e.g. "(1). ", "(12). "
-        cleaned = re.sub(r"\(\d+\)\.\s*", "", text)
-        # wrap nicely
-        return "\n".join(textwrap.wrap(cleaned, width=width))
-
-    table_data["PK Range"] = table_data["PK Range"].apply(clean_and_wrap)
-
-    # keep track of how many lines each cell has (for row height calc)
-    line_counts = table_data["PK Range"].apply(lambda s: s.count("\n") + 1).tolist()
-
-    # --- 2️⃣  Build the table ---
+    table_data["PK Range"] = table_data["PK Range"].apply(lambda x: wrap_pk_ranges(x, wrap_after=3))
     data_matrix = table_data.values.tolist()
-    col_labels   = list(table_data.columns)
-    col_widths   = [0.12, 0.22, 0.50, 0.13]   # tweak if needed
+    col_labels = list(table_data.columns)
 
-    tbl = ax2.table(
+    table = ax2.table(
         cellText=data_matrix,
         colLabels=col_labels,
         cellLoc='center',
@@ -463,46 +449,25 @@ import re, textwrap
         bbox=[0, 0, 1, 1]
     )
 
-    tbl.auto_set_font_size(False)
+    table.auto_set_font_size(False)
+    col_widths = [0.12, 0.2, 0.53, 0.15]  # Wider PK Range column
 
-    # --- 3️⃣  Style header, zebra rows & dynamic height ---
-    for (row, col), cell in tbl.get_celld().items():
-
-        # dynamic height (skip header row 0)
-        if row > 0:
-            this_height = 0.15 * line_counts[row-1]   # base = 0.15
-            cell.set_height(this_height)
-
-        # fixed widths
+    for (row, col), cell in table.get_celld().items():
+        cell.set_linewidth(0.7)
+        cell.set_fontsize(11 if col == 2 else 13)  # Smaller font for PK column
+        cell.set_height(0.15)
         if col < len(col_widths):
             cell.set_width(col_widths[col])
-
-        # common font settings
-        cell.set_fontsize(13)
-        cell.set_linewidth(0.7)
-
-        # header styling
         if row == 0:
+            cell.set_text_props(color='white', weight='bold')
             cell.set_facecolor('#003366')
-            cell.set_text_props(weight='bold', color='white')
-        # light-green background for Request rows
-        elif "Request" in str(data_matrix[row-1][0]):
+        elif "Request" in str(data_matrix[row - 1][0]):
             cell.set_facecolor('#e5f5e5')
         else:
             cell.set_facecolor('white')
 
-    tbl.scale(1, 1.8)   # overall vertical scaling (adjust to taste)
-
+    table.scale(1, 2.0)
     pdf.savefig(fig, bbox_inches='tight')
     pdf.close()
 
-    # Prepare for download
-    buffer.seek(0)
-    st.success("✅ PDF generated successfully.")
-    st.download_button(
-        label="📥 Click to Download PDF",
-        data=buffer,
-        file_name=export_base,
-        mime="application/pdf"
-    )
-
+    st.success(f"✅ Exported to: {export_base}.pdf")
