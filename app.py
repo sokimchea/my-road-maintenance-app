@@ -335,117 +335,113 @@ st.dataframe(sum_grouped)
 
 
 # ------------------------------------------------------------------
-# 📤 Export section
+# 📤  Export Chart & Summary → PDF   (single-click download)
 # ------------------------------------------------------------------
 import io
+from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.gridspec import GridSpec
+from matplotlib.ticker import FuncFormatter
+
 st.markdown("---")
 
-if st.button("📤 Export Chart & Summary to PDF"):
-    from matplotlib.backends.backend_pdf import PdfPages
-    from matplotlib.gridspec import GridSpec
-    from matplotlib.ticker import FuncFormatter
+def build_pdf() -> bytes:
+    """Generate the PDF and return its bytes."""
+    buf = io.BytesIO()
+    with PdfPages(buf) as pdf:
 
-    export_base = f"{selected_road}_{int(start_input)}_{int(end_input)}.pdf"
+        # ---------- figure & grid ----------
+        fig = plt.figure(figsize=(16.5, 11.7))             # A3 landscape
+        gs  = GridSpec(2, 1, height_ratios=[3.5, 1])
+        fig.subplots_adjust(left=0.1, right=0.9,
+                            top=0.9,  bottom=0.1)
 
-    # ---------- create in-memory PDF buffer ----------
-    buffer = io.BytesIO()
-    pdf    = PdfPages(buffer)
+        # ----------------------------------------------------------
+        # 1️⃣  CHART (ax1)  –– your existing logic (unchanged)
+        # ----------------------------------------------------------
+        ax1 = fig.add_subplot(gs[0])
+        ax1.set_title(f"\n\nRoad: {selected_road}",
+                      fontproperties=font_prop,
+                      fontsize=title_font_size)
+        ax1.set_xlabel("PK (Chainage in km)",
+                       fontproperties=font_prop,
+                       fontsize=font_size)
 
-    # ---------- figure & grid ----------
-    fig = plt.figure(figsize=(16.5, 11.7))          # A3 landscape
-    gs  = GridSpec(2, 1, height_ratios=[3.5, 1])
-    fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
+        for _, seg in filtered.iterrows():
+            key = (f"Request_{seg['Year']}_{seg['Maintenance_Type']}"
+                   if seg["Type"] == "Request"
+                   else f"Approval_{seg['Year']}").replace(" ", "_")
+            if key not in y_map:
+                continue
+            y  = y_map[key]
+            c  = color_map.get(seg["Maintenance_Type"], "gray")
+            s  = max(seg["PK_Start"], start_input)
+            e  = min(seg["PK_End"],   end_input)
+            if s >= e:
+                continue
+            ax1.barh(y, e-s, left=s, color=c,
+                     edgecolor="black" if seg["Type"]=="Request" else "none",
+                     height=0.4)
+            if seg["Type"] == "Request":
+                ax1.axvline(s, linestyle="dashed", color=c, alpha=0.6)
+                ax1.axvline(e, linestyle="dashed", color=c, alpha=0.6)
 
-    # ------------------------------------------------------------------
-    # 1️⃣  CHART  (ax1)  –– unchanged logic
-    # ------------------------------------------------------------------
-    ax1 = fig.add_subplot(gs[0])
-    ax1.set_title(f"\n\nRoad: {selected_road}",
-                  fontproperties=font_prop, fontsize=title_font_size)
-    ax1.set_xlabel("PK (Chainage in km)",
-                   fontproperties=font_prop, fontsize=font_size)
+        ax1.xaxis.set_major_formatter(
+            FuncFormatter(lambda x, _:
+                          f"{int(x//1000)}+{int(x%1000):03d}"))
+        ax1.set_xlim(start_input, end_input)
+        ax1.set_ylim(-0.5, max(y_map.values())+0.5)
+        ax1.set_yticks(list(y_map.values()))
+        for y_val, lab in zip(y_map.values(), y_labels):
+            ax1.text(start_input-40000, y_val, lab,
+                     ha='right', va='center', fontsize=font_size,
+                     fontproperties=font_prop,
+                     color=y_label_colors[y_val])
+        ax1.grid(True)
 
-    label_positions, pk_label_positions = {}, []
+        # ----------------------------------------------------------
+        # 2️⃣  SUMMARY TABLE (ax2)
+        # ----------------------------------------------------------
+        ax2 = fig.add_subplot(gs[1]); ax2.axis("off")
 
-    for _, seg in filtered.iterrows():
-        key = (f"Request_{seg['Year']}_{seg['Maintenance_Type']}"
-               if seg["Type"] == "Request"
-               else f"Approval_{seg['Year']}").replace(" ", "_")
+        def wrap_pk(txt, every=3):
+            parts = txt.split(", ")
+            return "\n".join(", ".join(parts[i:i+every])
+                             for i in range(0, len(parts), every))
 
-        if key not in y_map:
-            continue
+        tbl_df = sum_grouped.copy()
+        tbl_df["PK Range"] = tbl_df["PK Range"].apply(wrap_pk)
+        data      = tbl_df.values.tolist()
+        headers   = list(tbl_df.columns)
+        col_width = [0.12, 0.20, 0.53, 0.15]
 
-        y      = y_map[key]
-        colour = color_map.get(seg["Maintenance_Type"], "gray")
-        start  = max(seg["PK_Start"], start_input)
-        end    = min(seg["PK_End"],   end_input)
-        if start >= end:
-            continue
+        tbl = ax2.table(cellText=data, colLabels=headers,
+                        cellLoc='center', loc='center',
+                        bbox=[0,0,1,1])
+        tbl.auto_set_font_size(False)
+        for (r, c), cell in tbl.get_celld().items():
+            if c < len(col_width):
+                cell.set_width(col_width[c])
+            cell.set_fontsize(11 if c==2 else 13)
+            cell.set_linewidth(0.7)
+            cell.set_height(0.15)
+            if not r:
+                cell.set_facecolor("#003366")
+                cell.set_text_props(color="white", weight="bold")
+            elif "Request" in str(data[r-1][0]):
+                cell.set_facecolor("#e5f5e5")
+        tbl.scale(1, 2.0)
 
-        ax1.barh(y, end-start, left=start, color=colour,
-                 edgecolor="black" if seg["Type"] == "Request" else "none",
-                 height=0.4)
+        # ---------- add page ----------
+        pdf.savefig(fig, bbox_inches='tight')
 
-        # request PK label (seq prefix already in sum_grouped)
-        if seg["Type"] == "Request":
-            ax1.axvline(start, linestyle="dashed", color=colour, alpha=0.6)
-            ax1.axvline(end,   linestyle="dashed", color=colour, alpha=0.6)
+    buf.seek(0)          # rewind
+    return buf.getvalue()
 
-    ax1.xaxis.set_major_formatter(
-        FuncFormatter(lambda x, _: f"{int(x//1000)}+{int(x%1000):03d}")
-    )
-    ax1.set_xlim(start_input, end_input)
-    ax1.set_ylim(-0.5, max(y_map.values())+0.5)
-    ax1.set_yticks(list(y_map.values()))
-    for y_val, lab in zip(y_map.values(), y_labels):
-        ax1.text(start_input-40000, y_val, lab,
-                 ha='right', va='center',
-                 fontsize=font_size, fontproperties=font_prop,
-                 color=y_label_colors[y_val])
-    ax1.grid(True)
-
-    # ------------------------------------------------------------------
-    # 2️⃣  SUMMARY TABLE  (ax2)  –– unchanged except dynamic wrap
-    # ------------------------------------------------------------------
-    ax2 = fig.add_subplot(gs[1]); ax2.axis("off")
-
-    def wrap_pk(cell, wrap_after=3):
-        parts = cell.split(", ")
-        return "\n".join(", ".join(parts[i:i+wrap_after])
-                         for i in range(0, len(parts), wrap_after))
-
-    table_data = sum_grouped.copy()
-    table_data["PK Range"] = table_data["PK Range"].apply(wrap_pk)
-    data_matrix = table_data.values.tolist()
-    col_labels  = list(table_data.columns)
-    col_widths  = [0.12, 0.20, 0.53, 0.15]
-
-    tbl = ax2.table(cellText=data_matrix, colLabels=col_labels,
-                    cellLoc='center', loc='center', bbox=[0,0,1,1])
-    tbl.auto_set_font_size(False)
-
-    for (row, col), cell in tbl.get_celld().items():
-        if col < len(col_widths):
-            cell.set_width(col_widths[col])
-        cell.set_fontsize(11 if col == 2 else 13)
-        cell.set_linewidth(0.7)
-        cell.set_height(0.15)
-        if not row:                                   # header
-            cell.set_facecolor('#003366')
-            cell.set_text_props(color='white', weight='bold')
-        elif "Request" in str(data_matrix[row-1][0]): # zebra
-            cell.set_facecolor('#e5f5e5')
-
-    tbl.scale(1, 2.0)
-
-    # ---------- finish PDF ----------
-    pdf.savefig(fig, bbox_inches='tight')
-    pdf.close()
-    buffer.seek(0)
-
-    # ---------- download button ----------
-
-    data=buffer,
-    file_name=export_base,
+# 👉 single button: when clicked, build_pdf() runs & file downloads
+filename = f"{selected_road}_{int(start_input)}_{int(end_input)}.pdf"
+st.download_button(
+    label="📤 Export Chart & Summary to PDF",
+    data=build_pdf,                 # <-- pass the callable
+    file_name=filename,
     mime="application/pdf"
-    
+)
