@@ -444,9 +444,8 @@ if st.button("📤 Export Chart & Summary to PDF"):
     buffer.seek(0)
 
     # ---------- download button ----------
-    st.download_button(
-        "📥 Click to Download PDF",
-        data=buffer,
-        file_name=export_base,
-        mime="application/pdf"
-    )
+
+    data=buffer,
+    file_name=export_base,
+    mime="application/pdf"
+    
