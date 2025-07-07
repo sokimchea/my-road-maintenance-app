@@ -333,7 +333,6 @@ sum_grouped["Total Distance (km)"] = sum_grouped["Total Distance (km)"].round(2)
 # Show in Streamlit
 st.dataframe(sum_grouped)
 
-
 import io
 
 # Export section
